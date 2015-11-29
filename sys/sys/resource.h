@@ -135,6 +135,7 @@ int	getrlimit(int, struct rlimit *);
 int	getrusage(int, struct rusage *) __RENAME(__getrusage50);
 #endif
 int	setpriority(int, id_t, int);
+int    schedswitch(int, id_t, int);
 int	setrlimit(int, const struct rlimit *);
 __END_DECLS
 

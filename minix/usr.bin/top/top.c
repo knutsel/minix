@@ -355,6 +355,7 @@ static void print_proc(struct tp *tp, u64_t total_ticks)
 	int ticks;
 	struct proc *pr = tp->p;
 
+        printf("%5d ", SLOT_NR(pr->p_endpoint));
 	printf("%5d ", pr->p_pid);
 	euid = pr->p_effuid;
 	name = pr->p_name;
@@ -491,7 +492,7 @@ static void print_procs(int maxlines,
 
 	NEWLINE;
 
-	printf("  PID USERNAME PRI NICE    SIZE STATE   TIME     CPU COMMAND");
+       printf(" SLOT   PID USERNAME PRI NICE    SIZE STATE   TIME     CPU COMMAND");
 	NEWLINE;
 	for(p = 0; p < nprocs; p++) {
 		struct proc *pr;
@@ -514,7 +515,7 @@ static void print_procs(int maxlines,
 			blockedseen = 1;
 		}
 
-		print_proc(&tick_procs[p], total_ticks);
+               print_proc(&tick_procs[p], total_ticks);
 		NEWLINE;
 
 		if(!blockedverbose)
@@ -538,7 +539,7 @@ static void print_procs(int maxlines,
 			tpdep = lookup(dep, tick_procs, nprocs);
 			pr = tpdep->p;
 			printf("%*s> ", level, "");
-			print_proc(tpdep, total_ticks);
+                       print_proc(tpdep, total_ticks); // Todo JvD: Investigate this.
 			NEWLINE;
 		}
 	}

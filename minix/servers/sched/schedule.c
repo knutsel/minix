@@ -4,7 +4,7 @@
  *   do_noquantum:        Called on behalf of process' that run out of quantum
  *   do_start_scheduling  Request to start scheduling a proc
  *   do_stop_scheduling   Request to stop scheduling a proc
- *   do_nice		  Request to change the nice level on a proc
+ *   do_nice              Request to change the nice level on a proc
  *   init_scheduling      Called from main.c to set up/prepare scheduling
  */
 #include "sched.h"
@@ -12,45 +12,173 @@
 #include <assert.h>
 #include <minix/com.h>
 #include <machine/archtypes.h>
+#include <stdio.h>
+#include <time.h>
+#include <stdlib.h>
 
 static unsigned balance_timeout;
 
-#define BALANCE_TIMEOUT	5 /* how often to balance queues in seconds */
+#define BALANCE_TIMEOUT 5 /* how often to balance queues in seconds */
 
 static int schedule_process(struct schedproc * rmp, unsigned flags);
 
-#define SCHEDULE_CHANGE_PRIO	0x1
-#define SCHEDULE_CHANGE_QUANTUM	0x2
-#define SCHEDULE_CHANGE_CPU	0x4
+/* defined in main.c */
+extern int verbose;
+extern int sched_algorithm; 
+extern int start_quantum;  
+extern int lottery_initialized; 
 
-#define SCHEDULE_CHANGE_ALL	(	\
-		SCHEDULE_CHANGE_PRIO	|	\
-		SCHEDULE_CHANGE_QUANTUM	|	\
-		SCHEDULE_CHANGE_CPU		\
+/* the maximum number of tickets one process can have */
+#define MAX_TICKS_PER_PROC 10
+/* the maximum number of tickets total */
+#define MAXTICKETS (NR_PROCS*MAX_TICKS_PER_PROC)
+/* the number of tickets you get when starting up */
+#define START_TICKETS 3
+/* the lottery prize - how many prio levels the winner gets bumped */
+#define PRIZE 1
+
+int num_tickets = 0;             /* the number of outstanding tickets */
+int tickets[MAXTICKETS];         /* the wheel of fortune or array of tickets */
+int last_winner;                 /* previous winner slot */
+int last_winner_prio;            /* previous winner prio */
+
+#define SCHEDULE_CHANGE_PRIO    0x1
+#define SCHEDULE_CHANGE_QUANTUM 0x2
+#define SCHEDULE_CHANGE_CPU     0x4
+
+#define SCHEDULE_CHANGE_ALL     (       \
+               SCHEDULE_CHANGE_PRIO    |       \
+               SCHEDULE_CHANGE_QUANTUM |       \
+               SCHEDULE_CHANGE_CPU             \
 		)
 
-#define schedule_process_local(p)	\
+#define schedule_process_local(p)       \
 	schedule_process(p, SCHEDULE_CHANGE_PRIO | SCHEDULE_CHANGE_QUANTUM)
-#define schedule_process_migrate(p)	\
+#define schedule_process_migrate(p)     \
 	schedule_process(p, SCHEDULE_CHANGE_CPU)
 
-#define CPU_DEAD	-1
+#define CPU_DEAD        -1
 
-#define cpu_is_available(c)	(cpu_proc[c] >= 0)
+#define cpu_is_available(c)     (cpu_proc[c] >= 0)
 
 #define DEFAULT_USER_TIME_SLICE 200
 
 /* processes created by RS are sysytem processes */
-#define is_system_proc(p)	((p)->parent == RS_PROC_NR)
+#define is_system_proc(p)       ((p)->parent == RS_PROC_NR)
 
 static unsigned cpu_proc[CONFIG_MAX_CPUS];
+
+/* Macro to convert endpoints to slots into ptable */
+/*  ** Note this macro doesn't take in to account the kernel tasks! **  */
+#define SLOT_NR(e) (_ENDPOINT_P(e))
+
+/* do the lottery drawing; the winner gets a PRIZE bump in prio */
+static int do_lottery()
+{
+       int winner;
+       struct schedproc *rmp;
+
+       if (num_tickets == 0) {
+               return OK; /* Nothing to do here. */
+       } else {
+               winner = (int) (random() % num_tickets);
+       }
+
+       /* reset the previous winner to its original state */
+       if (last_winner != -1) {                                /* startup */
+               rmp = &schedproc[tickets[last_winner]];
+               rmp->priority = last_winner_prio;
+               if (verbose)
+                       printf("Resetting: (%d:%d:%d) prio to %d\n", winner, 
+                                       last_winner, rmp->endpoint, rmp->priority);
+       }
+
+       /* and bump the winner if it's safe (don't go too close to prio 0 */
+       rmp = &schedproc[tickets[winner]];
+       if (rmp->priority > (PRIZE + 1)) {
+               last_winner_prio = rmp->priority;
+               rmp->priority -= PRIZE;
+               if (verbose)
+                       printf("Winner is: (%d:%d:%d), raising prio to %d\n", winner, 
+                                       tickets[winner], rmp->endpoint, rmp->priority);
+       } else {
+               if (verbose) {
+                       printf("Winner is: (%d:%d:%d), NOT rasing prio from %d ",
+                                       winner, tickets[winner], rmp->endpoint, rmp->priority);
+                       printf("- too high already\n");
+               }
+       }
+       last_winner = winner;
+
+
+       return OK;
+}
+
+static void print_tickets()
+{
+       int i;
+       printf("num_tickets: %d ", num_tickets);
+       for (i = 0; i < num_tickets; i++) {
+               printf(" %d:%d", i, tickets[i]);
+       }
+       printf("\n");
+}
+
+/* Give the process in slot slot_nr how_many tickets */
+static void give_tickets(int slot_nr, int how_many)
+{
+       int i;
+       for (i = 0; i < how_many; i++) {
+               tickets[num_tickets] = slot_nr;
+               num_tickets++;
+               if (num_tickets > MAXTICKETS)
+                       panic("Maximum number in the lottery has been exceeded!");
+       }
+}
+
+/* remove all tickets for slot_nr and recompact the tickets array */
+static void remove_tickets(int slot_nr)
+{
+       int i;
+       int j = 0;
+       for (i = 0; i < num_tickets; i++) {
+               tickets[j] = tickets[i];
+               if (tickets[i] != slot_nr) {
+                       j++;
+               }
+       }
+       num_tickets = j;
+}
+
+void init_lottery_sched()
+{
+       int proc_nr;
+       struct schedproc *rmp;
+
+       printf("SCHED: Initializing the Lottery Scheduler, max ticks per proc:%d, status:", MAX_TICKS_PER_PROC);
+       srandom(time(NULL) & INT_MAX);
+       lottery_initialized = 1;
+       last_winner = -1;
+
+       for (proc_nr=0, rmp=schedproc; proc_nr < NR_PROCS; proc_nr++, rmp++) {
+               if (rmp->flags & IN_USE) {
+                       give_tickets(SLOT_NR(rmp->endpoint), START_TICKETS);
+               }
+       }
+       print_tickets();
+}
+
+void clear_lottery() {
+       lottery_initialized = 0;
+       num_tickets = 0;
+}
 
 static void pick_cpu(struct schedproc * proc)
 {
 #ifdef CONFIG_SMP
 	unsigned cpu, c;
 	unsigned cpu_load = (unsigned) -1;
-	
+
 	if (machine.processors_count == 1) {
 		proc->cpu = machine.bsp_id;
 		return;
@@ -81,9 +209,8 @@ static void pick_cpu(struct schedproc * proc)
 }
 
 /*===========================================================================*
- *				do_noquantum				     *
+ *                              do_noquantum                                 *
  *===========================================================================*/
-
 int do_noquantum(message *m_ptr)
 {
 	register struct schedproc *rmp;
@@ -91,7 +218,7 @@ int do_noquantum(message *m_ptr)
 
 	if (sched_isokendpt(m_ptr->m_source, &proc_nr_n) != OK) {
 		printf("SCHED: WARNING: got an invalid endpoint in OOQ msg %u.\n",
-		m_ptr->m_source);
+                               m_ptr->m_source);
 		return EBADEPT;
 	}
 
@@ -103,11 +230,22 @@ int do_noquantum(message *m_ptr)
 	if ((rv = schedule_process_local(rmp)) != OK) {
 		return rv;
 	}
+
+       if (verbose) {
+               printf("SCHED: do_noquantum, %d (prio = %d) in slot %d\n", rmp->endpoint,
+                               rmp->priority, SLOT_NR(rmp->endpoint));
+       }
+
+       if (sched_algorithm == LOTTERY_ALGORITHM) {
+               if ((rv = do_lottery()) != OK ) {
+                       return rv;
+               }
+       }
 	return OK;
 }
 
 /*===========================================================================*
- *				do_stop_scheduling			     *
+ *                              do_stop_scheduling                           *
  *===========================================================================*/
 int do_stop_scheduling(message *m_ptr)
 {
@@ -119,9 +257,9 @@ int do_stop_scheduling(message *m_ptr)
 		return EPERM;
 
 	if (sched_isokendpt(m_ptr->m_lsys_sched_scheduling_stop.endpoint,
-		    &proc_nr_n) != OK) {
+                               &proc_nr_n) != OK) {
 		printf("SCHED: WARNING: got an invalid endpoint in OOQ msg "
-		"%d\n", m_ptr->m_lsys_sched_scheduling_stop.endpoint);
+                               "%d\n", m_ptr->m_lsys_sched_scheduling_stop.endpoint);
 		return EBADEPT;
 	}
 
@@ -131,20 +269,32 @@ int do_stop_scheduling(message *m_ptr)
 #endif
 	rmp->flags = 0; /*&= ~IN_USE;*/
 
+       if (verbose) {
+               printf("SCHED: do_stop_scheduling, %d (prio = %d) in slot %d\n", rmp->endpoint,
+                               rmp->priority, SLOT_NR(rmp->endpoint));
+       }
+       int rv;
+       if (sched_algorithm == LOTTERY_ALGORITHM) {
+               remove_tickets(SLOT_NR(rmp->endpoint));
+               if ((rv = do_lottery()) != OK ) {
+                       return rv;
+               }
+       }
+
 	return OK;
 }
 
 /*===========================================================================*
- *				do_start_scheduling			     *
+ *                              do_start_scheduling                          *
  *===========================================================================*/
 int do_start_scheduling(message *m_ptr)
 {
 	register struct schedproc *rmp;
 	int rv, proc_nr_n, parent_nr_n;
-	
+
 	/* we can handle two kinds of messages here */
 	assert(m_ptr->m_type == SCHEDULING_START || 
-		m_ptr->m_type == SCHEDULING_INHERIT);
+                       m_ptr->m_type == SCHEDULING_INHERIT);
 
 	/* check who can send you requests */
 	if (!accept_message(m_ptr))
@@ -152,7 +302,7 @@ int do_start_scheduling(message *m_ptr)
 
 	/* Resolve endpoint to proc slot. */
 	if ((rv = sched_isemtyendpt(m_ptr->m_lsys_sched_scheduling_start.endpoint,
-			&proc_nr_n)) != OK) {
+                                       &proc_nr_n)) != OK) {
 		return rv;
 	}
 	rmp = &schedproc[proc_nr_n];
@@ -172,7 +322,8 @@ int do_start_scheduling(message *m_ptr)
 		/* We have a special case here for init, which is the first
 		   process scheduled, and the parent of itself. */
 		rmp->priority   = USER_Q;
-		rmp->time_slice = DEFAULT_USER_TIME_SLICE;
+               /*      rmp->time_slice = DEFAULT_USER_TIME_SLICE; */
+               rmp->time_slice = start_quantum;
 
 		/*
 		 * Since kernel never changes the cpu of a process, all are
@@ -185,39 +336,41 @@ int do_start_scheduling(message *m_ptr)
 		/* FIXME set the cpu mask */
 #endif
 	}
-	
-	switch (m_ptr->m_type) {
 
-	case SCHEDULING_START:
-		/* We have a special case here for system processes, for which
-		 * quanum and priority are set explicitly rather than inherited 
-		 * from the parent */
-		rmp->priority   = rmp->max_priority;
-		rmp->time_slice = m_ptr->m_lsys_sched_scheduling_start.quantum;
-		break;
-		
-	case SCHEDULING_INHERIT:
-		/* Inherit current priority and time slice from parent. Since there
-		 * is currently only one scheduler scheduling the whole system, this
-		 * value is local and we assert that the parent endpoint is valid */
-		if ((rv = sched_isokendpt(m_ptr->m_lsys_sched_scheduling_start.parent,
-				&parent_nr_n)) != OK)
-			return rv;
+       switch (m_ptr->m_type) {
 
-		rmp->priority = schedproc[parent_nr_n].priority;
-		rmp->time_slice = schedproc[parent_nr_n].time_slice;
-		break;
-		
-	default: 
-		/* not reachable */
-		assert(0);
+               case SCHEDULING_START:
+                       /* We have a special case here for system processes, for which
+                        * quanum and priority are set explicitly rather than inherited
+                        * from the parent */
+                       rmp->priority   = rmp->max_priority;
+                       /* rmp->time_slice = m_ptr->m_lsys_sched_scheduling_start.quantum; */
+                       rmp->time_slice = start_quantum;
+                       break;
+
+               case SCHEDULING_INHERIT:
+                       /* Inherit current priority and time slice from parent. Since there
+                        * is currently only one scheduler scheduling the whole system, this
+                        * value is local and we assert that the parent endpoint is valid */
+                       if ((rv = sched_isokendpt(m_ptr->m_lsys_sched_scheduling_start.parent,
+                                                       &parent_nr_n)) != OK)
+                               return rv;
+
+                       rmp->priority = schedproc[parent_nr_n].priority;
+                       /* rmp->time_slice = schedproc[parent_nr_n].time_slice; */
+                       rmp->time_slice = start_quantum;
+                       break;
+
+               default:
+                       /* not reachable */
+                       assert(0);
 	}
 
 	/* Take over scheduling the process. The kernel reply message populates
 	 * the processes current priority and its time slice */
 	if ((rv = sys_schedctl(0, rmp->endpoint, 0, 0, 0)) != OK) {
 		printf("Sched: Error taking over scheduling for %d, kernel said %d\n",
-			rmp->endpoint, rv);
+                               rmp->endpoint, rv);
 		return rv;
 	}
 	rmp->flags = IN_USE;
@@ -232,7 +385,7 @@ int do_start_scheduling(message *m_ptr)
 
 	if (rv != OK) {
 		printf("Sched: Error while scheduling process, kernel replied %d\n",
-			rv);
+                               rv);
 		return rv;
 	}
 
@@ -243,13 +396,24 @@ int do_start_scheduling(message *m_ptr)
 	 * scheduler into the "scheduler" field.
 	 */
 
+       if (verbose) {
+               printf("SCHED: do_start_scheduling, %d (prio = %d) in slot %d\n", rmp->endpoint,
+                               rmp->priority, SLOT_NR(rmp->endpoint));
+       }
 	m_ptr->m_sched_lsys_scheduling_start.scheduler = SCHED_PROC_NR;
+
+       if (sched_algorithm == LOTTERY_ALGORITHM) {
+               give_tickets(SLOT_NR(rmp->endpoint), START_TICKETS);
+               if ((rv = do_lottery()) != OK ) {
+                       return rv;
+               }
+       }
 
 	return OK;
 }
 
 /*===========================================================================*
- *				do_nice					     *
+ *                              do_nice                                      *
  *===========================================================================*/
 int do_nice(message *m_ptr)
 {
@@ -264,7 +428,7 @@ int do_nice(message *m_ptr)
 
 	if (sched_isokendpt(m_ptr->m_pm_sched_scheduling_set_nice.endpoint, &proc_nr_n) != OK) {
 		printf("SCHED: WARNING: got an invalid endpoint in OoQ msg "
-		"%d\n", m_ptr->m_pm_sched_scheduling_set_nice.endpoint);
+                               "%d\n", m_ptr->m_pm_sched_scheduling_set_nice.endpoint);
 		return EBADEPT;
 	}
 
@@ -278,6 +442,16 @@ int do_nice(message *m_ptr)
 	old_q     = rmp->priority;
 	old_max_q = rmp->max_priority;
 
+       if (verbose)
+               printf("SCHED: renicing slot %d to %d\n", SLOT_NR(rmp->endpoint), new_q);
+
+       if (sched_algorithm == LOTTERY_ALGORITHM) {
+               if (new_q < old_q) { // increase is decrease
+                       /* more chances in the future, for this process */
+                       give_tickets(SLOT_NR(rmp->endpoint), 3);
+               }
+       }
+
 	/* Update the proc entry and reschedule the process */
 	rmp->max_priority = rmp->priority = new_q;
 
@@ -288,11 +462,13 @@ int do_nice(message *m_ptr)
 		rmp->max_priority = old_max_q;
 	}
 
+       /* TODO JvD: Add code to increase tickets when called */
+
 	return rv;
 }
 
 /*===========================================================================*
- *				schedule_process			     *
+ *                              schedule_process                             *
  *===========================================================================*/
 static int schedule_process(struct schedproc * rmp, unsigned flags)
 {
@@ -317,9 +493,9 @@ static int schedule_process(struct schedproc * rmp, unsigned flags)
 		new_cpu = -1;
 
 	if ((err = sys_schedule(rmp->endpoint, new_prio,
-		new_quantum, new_cpu)) != OK) {
+                                       new_quantum, new_cpu)) != OK) {
 		printf("PM: An error occurred when trying to schedule %d: %d\n",
-		rmp->endpoint, err);
+                               rmp->endpoint, err);
 	}
 
 	return err;
@@ -327,7 +503,7 @@ static int schedule_process(struct schedproc * rmp, unsigned flags)
 
 
 /*===========================================================================*
- *				init_scheduling				     *
+ *                              init_scheduling                              *
  *===========================================================================*/
 void init_scheduling(void)
 {
@@ -340,7 +516,7 @@ void init_scheduling(void)
 }
 
 /*===========================================================================*
- *				balance_queues				     *
+ *                              balance_queues                               *
  *===========================================================================*/
 
 /* This function in called every N ticks to rebalance the queues. The current
@@ -353,6 +529,9 @@ void balance_queues(void)
 	struct schedproc *rmp;
 	int r, proc_nr;
 
+       if (!lottery_initialized) {
+               init_lottery_sched();
+       }
 	for (proc_nr=0, rmp=schedproc; proc_nr < NR_PROCS; proc_nr++, rmp++) {
 		if (rmp->flags & IN_USE) {
 			if (rmp->priority > rmp->max_priority) {
@@ -364,4 +543,12 @@ void balance_queues(void)
 
 	if ((r = sys_setalarm(balance_timeout, 0)) != OK)
 		panic("sys_setalarm failed: %d", r);
+
+       if (verbose > 3) {
+               printf("SCHED: balance_queues\n");
+               if (sched_algorithm == LOTTERY_ALGORITHM) {
+                       print_tickets();
+               }
+       }
 }
+

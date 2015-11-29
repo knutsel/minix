@@ -45,12 +45,14 @@ int do_getprocnr(void);
 int do_getepinfo(void);
 int do_svrctl(void);
 int do_getsetpriority(void);
+int do_schedswitch(void);
 int do_getrusage(void);
 
 /* schedule.c */
 void sched_init(void);
 int sched_start_user(endpoint_t ep, struct mproc *rmp);
 int sched_nice(struct mproc *rmp, int nice);
+int sched_switch(struct mproc *rmp, int mesg, int val);
 
 /* profile.c */
 int do_sprofile(void);

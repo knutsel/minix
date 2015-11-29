@@ -28,7 +28,7 @@
 #include "vnode.h"
 
 /* max. number of simultaneously pending select() calls */
-#define MAXSELECTS 25
+#define MAXSELECTS 250
 #define FROM_PROC 0
 #define TO_PROC   1
 

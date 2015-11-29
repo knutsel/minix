@@ -478,6 +478,16 @@ typedef struct {
 } mess_lc_pm_priority;
 _ASSERT_MSG_SIZE(mess_lc_pm_priority);
 
+ typedef struct {
+       int sched_mesg;
+       int who;
+       int sched_mesg_arg;
+
+       uint8_t padding[44];
+} mess_lc_pm_schedswitch;
+_ASSERT_MSG_SIZE(mess_lc_pm_schedswitch);
+
+
 typedef struct {
 	pid_t pid;
 	int req;
@@ -2081,6 +2091,7 @@ typedef struct noxfer_message {
 		mess_lc_pm_itimer	m_lc_pm_itimer;
 		mess_lc_pm_mcontext	m_lc_pm_mcontext;
 		mess_lc_pm_priority	m_lc_pm_priority;
+               mess_lc_pm_schedswitch  m_lc_pm_schedswitch;
 		mess_lc_pm_ptrace	m_lc_pm_ptrace;
 		mess_lc_pm_reboot	m_lc_pm_reboot;
 		mess_lc_pm_rusage	m_lc_pm_rusage;

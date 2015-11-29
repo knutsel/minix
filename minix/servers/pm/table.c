@@ -55,6 +55,7 @@ int (* const call_vec[NR_PM_CALLS])(void) = {
 	CALL(PM_SRV_KILL)	= do_srv_kill,		/* srv_kill(2) */
 	CALL(PM_EXEC_NEW)	= do_newexec,
 	CALL(PM_EXEC_RESTART)	= do_execrestart,
+       CALL(PM_SCHEDSWITCH)    = do_schedswitch,       /* the new schedswitch(2) */
 	CALL(PM_GETEPINFO)	= do_getepinfo,		/* getepinfo(2) */
 	CALL(PM_GETPROCNR)	= do_getprocnr,		/* getprocnr(2) */
 	CALL(PM_GETSYSINFO)	= do_getsysinfo		/* getsysinfo(2) */

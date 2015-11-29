@@ -96,8 +96,8 @@ struct pstat *ptable;		/* table with process information */
  */
 #define S_HEADER "  PID TTY  TIME CMD\n"
 #define S_FORMAT "%5s %3s %s %s\n"
-#define L_HEADER "ST UID   PID  PPID  PGRP     SZ         RECV TTY  TIME CMD\n"
-#define L_FORMAT " %c %3d %5s %5d %5d %6d %12s %3s %s %s\n"
+#define L_HEADER "ST  UID  SLOT   PID  PPID  PGRP     SZ         RECV TTY  TIME CMD\n"
+#define L_FORMAT " %c %4d %5d %5s %5d %5d %6d %12s %3s %s %s\n"
 
 
 struct pstat {			/* structure filled by pstat() */
@@ -299,7 +299,7 @@ char *argv[];
 
 		if (opt_long) printf(L_FORMAT,
 			       ps->ps_state,
-			       ps->ps_euid, pid, ps->ps_ppid, 
+                              ps->ps_euid, ((int)(n - nr_tasks) >= 0 ? n - nr_tasks : 0), pid, ps->ps_ppid,
 			       ps->ps_pgrp,
 			       off_to_k(ps->ps_memory),
 			       (ps->ps_recv != NONE ? prrecv(ps) : ""),

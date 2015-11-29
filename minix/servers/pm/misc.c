@@ -294,6 +294,30 @@ int do_getsetpriority()
 }
 
 /*===========================================================================*
+ *                             do_schedswitch                       *
+ *===========================================================================*/
+int do_schedswitch()
+{
+       int r, arg_mesg, arg_who, arg_val;
+       struct mproc *rmp;
+
+       arg_mesg = m_in.m_lc_pm_schedswitch.sched_mesg;
+       arg_who = m_in.m_lc_pm_schedswitch.who;
+       arg_val = m_in.m_lc_pm_schedswitch.sched_mesg_arg;
+
+       if (mp->mp_effuid != SUPER_USER)
+               return EPERM;
+
+       if ((rmp = find_proc(arg_who)) == NULL)
+               return(ESRCH);
+
+       if ((r = sched_switch(rmp, arg_mesg, arg_val)) != OK) {
+               return r;
+       }
+       return(OK);
+}
+
+/*===========================================================================*
  *				do_svrctl				     *
  *===========================================================================*/
 int do_svrctl(void)

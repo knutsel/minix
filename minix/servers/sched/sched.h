@@ -15,4 +15,9 @@
 
 #include "proto.h"
 
+#define SCTL_QUANTUM_SET 1
+#define SCTL_VERBOSE_SET 2
+#define SCTL_ALGORITHM_SET 3
+#define LOTTERY_ALGORITHM 3
+
 extern struct machine machine;		/* machine info */

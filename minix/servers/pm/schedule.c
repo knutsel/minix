@@ -110,3 +110,30 @@ int sched_nice(struct mproc *rmp, int nice)
 
 	return (OK);
 }
+
+/*===========================================================================*
+ *                             sched_switch                                 *
+ *===========================================================================*/
+int sched_switch(struct mproc *rmp, int mesg, int val)
+{
+       int rv;
+       message m;
+       unsigned maxprio;
+
+       /* If the kernel is the scheduler, we don't allow messing with it */
+       if (rmp->mp_scheduler == KERNEL || rmp->mp_scheduler == NONE)
+               return (EINVAL);
+
+/*
+       if ((rv = nice_to_priority(nice, &maxprio)) != OK) {
+               return rv;
+       }
+*/
+       m.m_lc_pm_schedswitch.sched_mesg = mesg;
+       m.m_lc_pm_schedswitch.sched_mesg_arg = val;
+       if ((rv = _taskcall(rmp->mp_scheduler, SCHEDULING_SWITCH, &m))) {
+               return rv;
+       }
+
+       return (OK);
+}
